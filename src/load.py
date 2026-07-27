@@ -20,22 +20,29 @@ def _sanitize_records(df: pd.DataFrame) -> list:
     return clean_df.to_dict(orient="records")
 
 
-def _upsert_dataframe(df: pd.DataFrame, table: str, pk: str, engine: Engine,
+def _upsert_dataframe(df: pd.DataFrame, table: str, pk, engine: Engine,
                        update_columns: list = None):
     """
     Generic upsert: insert rows, and on primary-key conflict, update
     the specified columns (or all non-PK columns if not given).
     Executes in batches for reasonable performance on larger tables.
+
+    pk: a single column name (str) or a list of column names for a
+    composite primary key (e.g. ["treatment_id", "treatment_month"]
+    for the partitioned fact_treatment table).
     """
     if df.empty:
         return 0
 
+    pk_columns = [pk] if isinstance(pk, str) else list(pk)
+
     columns = list(df.columns)
     if update_columns is None:
-        update_columns = [c for c in columns if c != pk]
+        update_columns = [c for c in columns if c not in pk_columns]
 
     col_list = ", ".join(columns)
     placeholders = ", ".join(f":{c}" for c in columns)
+    pk_list = ", ".join(pk_columns)
 
     if update_columns:
         update_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_columns)
@@ -48,7 +55,7 @@ def _upsert_dataframe(df: pd.DataFrame, table: str, pk: str, engine: Engine,
     sql = text(f"""
         INSERT INTO {table} ({col_list})
         VALUES ({placeholders})
-        ON CONFLICT ({pk}) {conflict_action}
+        ON CONFLICT ({pk_list}) {conflict_action}
     """)
 
     records = _sanitize_records(df)
@@ -82,12 +89,26 @@ def load_dim_appointment(appointments: pd.DataFrame, engine: Engine) -> int:
     return _upsert_dataframe(df, "dim_appointment", "appointment_id", engine)
 
 
-def load_fact_treatment(treatments: pd.DataFrame, engine: Engine) -> int:
-    df = treatments[[
+def load_fact_treatment(treatments: pd.DataFrame, appointments: pd.DataFrame, engine: Engine) -> int:
+    """
+    fact_treatment is partitioned by month (see sql/ddl.sql), keyed on
+    a derived treatment_month column since treatments have no date of
+    their own. treatment_month is taken from the parent appointment's
+    start_time, truncated to the 1st of the month.
+    """
+    merged = treatments.merge(
+        appointments[["appointment_id", "start_time"]],
+        on="appointment_id",
+        how="inner",  # orphan treatments were already dropped in transform
+    )
+    merged["treatment_month"] = merged["start_time"].dt.to_period("M").dt.to_timestamp().dt.date
+
+    df = merged[[
         "treatment_id", "appointment_id", "treatment_type",
-        "duration_minutes", "cost", "is_cost_outlier", "cost_zscore"
+        "duration_minutes", "cost", "is_cost_outlier", "cost_zscore", "treatment_month"
     ]].copy()
-    return _upsert_dataframe(df, "fact_treatment", "treatment_id", engine)
+
+    return _upsert_dataframe(df, "fact_treatment", ["treatment_id", "treatment_month"], engine)
 
 
 def load_all(transformed_data: dict, engine: Engine) -> dict:
@@ -100,7 +121,9 @@ def load_all(transformed_data: dict, engine: Engine) -> dict:
     counts["dim_patient"] = load_dim_patient(transformed_data["patients"], engine)
     counts["dim_doctor"] = load_dim_doctor(transformed_data["appointments"], engine)
     counts["dim_appointment"] = load_dim_appointment(transformed_data["appointments"], engine)
-    counts["fact_treatment"] = load_fact_treatment(transformed_data["treatments"], engine)
+    counts["fact_treatment"] = load_fact_treatment(
+        transformed_data["treatments"], transformed_data["appointments"], engine
+    )
     return counts
 
 
