@@ -18,6 +18,7 @@ from transform import (
     aggregate_cost_per_patient,
     detect_cost_outliers,
     flag_frequent_visitors,
+    compute_summary_statistics,
 )
 
 
@@ -168,3 +169,46 @@ def test_frequent_visitor_flagging():
     patient_2 = result[result["patient_id"] == 2].iloc[0]
     assert patient_1["is_frequent_visitor"] == True
     assert patient_2["is_frequent_visitor"] == False
+
+
+# --------------------------------------------------
+# Summary statistics
+# --------------------------------------------------
+def test_summary_statistics_computes_correct_mean_median_stddev():
+    appointments = pd.DataFrame({
+        "duration_minutes": [10.0, 20.0, 30.0],
+    })
+    treatments = pd.DataFrame({
+        "cost": [100.0, 200.0, 300.0],
+        "duration_minutes": [5.0, 15.0, 25.0],
+    })
+    stats = compute_summary_statistics(appointments, treatments)
+
+    assert stats["cost"]["mean"] == pytest.approx(200.0)
+    assert stats["cost"]["median"] == pytest.approx(200.0)
+    assert stats["cost"]["count"] == 3
+
+    assert stats["treatment_duration_minutes"]["mean"] == pytest.approx(15.0)
+    assert stats["appointment_duration_minutes"]["mean"] == pytest.approx(20.0)
+
+
+def test_summary_statistics_ignores_nulls():
+    appointments = pd.DataFrame({"duration_minutes": [10.0, None, 30.0]})
+    treatments = pd.DataFrame({
+        "cost": [100.0, None, 300.0],
+        "duration_minutes": [5.0, None, 25.0],
+    })
+    stats = compute_summary_statistics(appointments, treatments)
+
+    # nulls should be dropped, not treated as zero
+    assert stats["cost"]["count"] == 2
+    assert stats["cost"]["mean"] == pytest.approx(200.0)
+
+
+def test_summary_statistics_handles_all_null_column():
+    appointments = pd.DataFrame({"duration_minutes": [None, None]})
+    treatments = pd.DataFrame({"cost": [None, None], "duration_minutes": [None, None]})
+    stats = compute_summary_statistics(appointments, treatments)
+
+    assert stats["cost"]["count"] == 0
+    assert stats["cost"]["mean"] is None

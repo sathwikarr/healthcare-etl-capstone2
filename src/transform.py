@@ -42,6 +42,7 @@ def clean_appointments(df: pd.DataFrame) -> pd.DataFrame:
     df = df.drop_duplicates(subset="appointment_id", keep="first")
 
     df["patient_id"] = df["patient_id"].astype("Int64")  # nullable int, keeps NaNs as <NA>
+    df["doctor_id"] = df["doctor_id"].astype("category")  # low-cardinality (100 doctors) — faster groupby, less memory
 
     df["start_time"] = pd.to_datetime(df["start_time"], errors="coerce", format="mixed")
     df["end_time"] = pd.to_datetime(df["end_time"], errors="coerce", format="mixed")  # 'invalid_timestamp' -> NaT
@@ -58,6 +59,7 @@ def clean_treatments(df: pd.DataFrame) -> pd.DataFrame:
     """Drop duplicate treatment_id rows (keep first)."""
     df = df.copy()
     df = df.drop_duplicates(subset="treatment_id", keep="first")
+    df["treatment_type"] = df["treatment_type"].astype("category")  # low-cardinality (5 types) — faster groupby, less memory
     return df.reset_index(drop=True)
 
 
@@ -161,6 +163,41 @@ def monthly_visit_summary(appointments: pd.DataFrame) -> pd.DataFrame:
 
 
 # --------------------------------------------------
+# Dataset-wide summary statistics (NumPy-based)
+# --------------------------------------------------
+def compute_summary_statistics(appointments: pd.DataFrame, treatments: pd.DataFrame) -> dict:
+    """
+    Dataset-wide descriptive statistics — distinct from the per-patient
+    cost aggregation in aggregate_cost_per_patient(). Computed with NumPy
+    directly (not pandas' built-in .mean()/.median() convenience methods)
+    to satisfy the "NumPy-based stats" requirement explicitly, matching
+    the same style used in detect_cost_outliers().
+
+    Returns a flat dict: mean/median/stddev for cost and for both
+    appointment duration and treatment duration.
+    """
+    costs = treatments["cost"].dropna().to_numpy(dtype=float)
+    treatment_durations = treatments["duration_minutes"].dropna().to_numpy(dtype=float)
+    appointment_durations = appointments["duration_minutes"].dropna().to_numpy(dtype=float)
+
+    def _stats(arr: np.ndarray) -> dict:
+        if arr.size == 0:
+            return {"mean": None, "median": None, "stddev": None, "count": 0}
+        return {
+            "mean": float(np.mean(arr)),
+            "median": float(np.median(arr)),
+            "stddev": float(np.std(arr)),
+            "count": int(arr.size),
+        }
+
+    return {
+        "cost": _stats(costs),
+        "treatment_duration_minutes": _stats(treatment_durations),
+        "appointment_duration_minutes": _stats(appointment_durations),
+    }
+
+
+# --------------------------------------------------
 # Full transform pipeline (convenience wrapper)
 # --------------------------------------------------
 def transform_all(patients: pd.DataFrame, appointments: pd.DataFrame,
@@ -181,6 +218,7 @@ def transform_all(patients: pd.DataFrame, appointments: pd.DataFrame,
     treat_with_outliers = detect_cost_outliers(treat_no_orphans)
     appt_with_overlaps = detect_overlapping_appointments(appt_no_orphans)
     monthly_summary = monthly_visit_summary(appt_no_orphans)
+    summary_stats = compute_summary_statistics(appt_with_overlaps, treat_with_outliers)
 
     return {
         "patients": clean_pat,
@@ -189,6 +227,7 @@ def transform_all(patients: pd.DataFrame, appointments: pd.DataFrame,
         "cost_per_patient": cost_per_patient,
         "frequent_visitors": frequent_visitors,
         "monthly_summary": monthly_summary,
+        "summary_stats": summary_stats,
     }
 
 
@@ -207,3 +246,6 @@ if __name__ == "__main__":
     print("\nOverlapping appointments found:", result["appointments"]["overlaps_previous"].sum())
     print("\nMonthly summary:")
     print(result["monthly_summary"].head())
+    print("\nSummary statistics:")
+    for metric, stats in result["summary_stats"].items():
+        print(f"  {metric}: {stats}")

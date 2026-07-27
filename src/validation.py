@@ -100,19 +100,58 @@ def check_invalid_literals(df: pd.DataFrame, column: str,
 # --------------------------------------------------
 def check_dtypes(df: pd.DataFrame, expected: dict, table_name: str) -> dict:
     """
-    Compare actual dtypes against an expected dict, e.g.
-    {"patient_id": "int64", "cost": "float64"}
+    Compare actual dtypes against a set of acceptable dtypes per column, e.g.
+    {"patient_id": ["int64"], "patient_name": ["object", "string", "str"]}
+
+    A list (rather than a single string) is used per column because pandas'
+    string dtype representation varies across versions/configurations
+    (e.g. 'object' vs 'string' vs 'str' with pandas' future string backend) —
+    this check should catch genuine schema drift (an int column suddenly
+    becoming a float, a date column suddenly becoming an int) without
+    false-flagging on cosmetic dtype-label differences between environments.
     """
     mismatches = {}
-    for col, expected_dtype in expected.items():
+    for col, acceptable_dtypes in expected.items():
+        if col not in df.columns:
+            mismatches[col] = {"expected": acceptable_dtypes, "actual": "COLUMN MISSING"}
+            continue
         actual_dtype = str(df[col].dtype)
-        if actual_dtype != expected_dtype:
-            mismatches[col] = {"expected": expected_dtype, "actual": actual_dtype}
+        if actual_dtype not in acceptable_dtypes:
+            mismatches[col] = {"expected": acceptable_dtypes, "actual": actual_dtype}
     return {
         "table": table_name,
         "check": "dtype_mismatch",
         "details": mismatches,
     }
+
+
+# Expected raw-CSV dtypes (pre-cleaning), used to detect schema drift at
+# extract time. String-typed columns accept several acceptable labels
+# since pandas' string dtype representation varies by version/config.
+_STRING_DTYPES = ["object", "string", "str"]
+
+EXPECTED_DTYPES = {
+    "patients": {
+        "patient_id": ["int64"],
+        "patient_name": _STRING_DTYPES,
+        "dob": _STRING_DTYPES,          # stays string at raw stage — includes 'invalid_date' literal
+        "gender": _STRING_DTYPES,
+    },
+    "appointments": {
+        "appointment_id": ["int64"],
+        "patient_id": ["float64", "int64"],  # float64 expected: NaNs force float upcast at raw stage
+        "doctor_id": ["int64"],
+        "start_time": _STRING_DTYPES,
+        "end_time": _STRING_DTYPES,     # stays string at raw stage — includes 'invalid_timestamp' literal
+    },
+    "treatments": {
+        "treatment_id": ["int64"],
+        "appointment_id": ["int64"],
+        "treatment_type": _STRING_DTYPES,
+        "duration_minutes": ["float64"],
+        "cost": ["float64"],
+    },
+}
 
 
 # --------------------------------------------------
@@ -133,6 +172,11 @@ def run_all_validations(data: dict) -> list:
     results.append(check_nulls(patients, "patients"))
     results.append(check_nulls(appointments, "appointments"))
     results.append(check_nulls(treatments, "treatments"))
+
+    # Schema / dtype validation (detects schema drift in the raw source files)
+    results.append(check_dtypes(patients, EXPECTED_DTYPES["patients"], "patients"))
+    results.append(check_dtypes(appointments, EXPECTED_DTYPES["appointments"], "appointments"))
+    results.append(check_dtypes(treatments, EXPECTED_DTYPES["treatments"], "treatments"))
 
     # Duplicates
     results.append(check_duplicates(patients, "patient_id", "patients"))
@@ -157,6 +201,15 @@ def _format_check_row(result: dict) -> str:
     """Turn one check's result dict into a markdown bullet."""
     table = result["table"]
     check = result["check"]
+
+    if result["check"] == "dtype_mismatch":
+        details = result["details"]
+        if not details:
+            return f"- **{table}.{check}** — all columns match expected type ✅"
+        lines = [f"- **{table}.{check}** — mismatches found:"]
+        for col, info in details.items():
+            lines.append(f"    - `{col}`: expected one of {info['expected']}, got `{info['actual']}`")
+        return "\n".join(lines)
 
     if "details" in result:
         details = result["details"]

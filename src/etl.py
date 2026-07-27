@@ -76,6 +76,11 @@ class HealthcareETL:
             rows = len(self.transformed_data[name])
             self.metrics["rows_out"][name] = rows
             logger.info(f"  {name}: {rows} rows after cleaning")
+
+        stats = self.transformed_data["summary_stats"]
+        for metric, values in stats.items():
+            logger.info(f"  stats[{metric}]: mean={values['mean']}, median={values['median']}, stddev={values['stddev']}")
+
         return self.transformed_data
 
     # ----------------------------------------
