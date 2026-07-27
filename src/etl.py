@@ -10,6 +10,8 @@ from datetime import datetime
 
 from validation import extract_all, run_all_validations, generate_markdown_report, save_report
 from transform import transform_all
+from load import load_all, log_audit_run
+from database_connection import get_engine
 
 logging.basicConfig(
     level=logging.INFO,
@@ -89,11 +91,14 @@ class HealthcareETL:
 
     # ----------------------------------------
     def load(self):
-        """
-        Placeholder for Step 8 — will write self.transformed_data into
-        Postgres via SQLAlchemy once the DDL (sql/ddl.sql) is in place.
-        """
-        logger.info("Load step not implemented yet — coming in Step 8.")
+        logger.info("Loading data into Postgres star schema...")
+        engine = get_engine()
+
+        load_counts = load_all(self.transformed_data, engine)
+        for table, count in load_counts.items():
+            logger.info(f"  {table}: {count} rows upserted")
+
+        return load_counts
 
     # ----------------------------------------
     def run(self):
@@ -107,6 +112,11 @@ class HealthcareETL:
         self.load()
 
         self.metrics["finished_at"] = datetime.now().isoformat()
+
+        engine = get_engine()
+        audit_rows = log_audit_run(self.metrics, engine)
+        logger.info(f"  Audit log: {audit_rows} rows written to etl_audit_log")
+
         logger.info("=== HealthcareETL pipeline finished ===")
         logger.info(f"Metrics: {self.metrics}")
         return self.metrics

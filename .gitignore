@@ -1,0 +1,19 @@
+# Environments
+.venv/
+venv/
+
+# Data (generated, not committed)
+data/raw/
+data/processed/
+
+# Secrets
+.env
+
+# IDE
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/

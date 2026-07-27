@@ -3,3 +3,4 @@ numpy
 faker
 sqlalchemy
 pytest
+python-dotenv
