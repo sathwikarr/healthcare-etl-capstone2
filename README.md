@@ -4,6 +4,7 @@ A healthcare data pipeline that extracts messy source data, validates and cleans
 computes derived metrics, and loads it into a PostgreSQL star schema for analytics —
 built with Python (Pandas/NumPy), PostgreSQL, and SQLAlchemy.
 
+![Star Schema](docs/star_schema.png)
 ![ERD](docs/ERD.png)
 
 ## Architecture
@@ -12,16 +13,16 @@ built with Python (Pandas/NumPy), PostgreSQL, and SQLAlchemy.
 CSV sources (patients, appointments, treatments)
         │
         ▼
-   Extract  ──►  validation.py   (nulls, duplicates, orphans, invalid literals)
+   Extract  ──►  validation.py   (nulls, duplicates, orphans, invalid literals, dtypes)
         │
         ▼
   Validate  ──►  docs/data_quality_report.md  (auto-generated)
         │
         ▼
- Transform  ──►  transform.py    (cleaning, orphan removal, metrics, outliers)
+ Transform  ──►  transform.py    (cleaning, orphan removal, metrics, outliers, stats)
         │
         ▼
-    Enrich  ──►  cost aggregation, frequent visitors, monthly summaries
+    Enrich  ──►  cost aggregation, frequent visitors, monthly + summary stats
         │
         ▼
       Load  ──►  load.py         (upsert into Postgres star schema)
@@ -45,23 +46,28 @@ Orchestrated end to end by the `HealthcareETL` class in `src/etl.py`
 healthcare-etl-capstone/
 ├── data/
 │   ├── raw/              # generated CSVs (gitignored)
-│   └── processed/
+│   └── processed/        # reserved for intermediate output; currently unused —
+│                          # the pipeline cleans in-memory and loads straight to
+│                          # Postgres, so nothing is written here today
 ├── src/
 │   ├── generate_data.py  # synthetic data generator (intentionally dirty)
 │   ├── models.py         # Patient, Appointment dataclasses
 │   ├── etl.py             # HealthcareETL orchestration class
 │   ├── validation.py      # extract + validation checks + quality report
-│   ├── transform.py       # cleaning, metrics, outlier/overlap detection
+│   ├── transform.py       # cleaning, metrics, outlier/overlap detection, stats
 │   ├── load.py             # upsert logic into Postgres
-│   └── database_connection.py  # SQLAlchemy engine from .env credentials
+│   ├── database_connection.py  # SQLAlchemy engine from .env credentials
+│   └── metrics.py         # reserved for standalone metrics helpers; currently
+│                           # unused — run metrics are tracked inline in HealthcareETL
 ├── sql/
 │   ├── ddl.sql                  # star schema (fact_treatment is partitioned by month)
 │   ├── analytics_queries.sql    # 10 required analytics queries
 │   └── audit_checks.sql         # independent SQL-side data quality checks
 ├── tests/
-│   └── test_etl.py       # 11 unit tests (pytest)
+│   └── test_etl.py       # 14 unit tests (pytest)
 ├── docs/
 │   ├── ERD.png
+│   ├── star_schema.png
 │   └── data_quality_report.md   # regenerated on every ETL run
 ├── requirements.txt
 └── README.md
@@ -69,39 +75,91 @@ healthcare-etl-capstone/
 
 ## Setup
 
+### Prerequisites
+- Python 3.10+
+- PostgreSQL 14+
+- Git
+
+### 1. Clone the repo
 ```bash
-# 1. Clone and enter the project
-git clone <repo-url>
-cd healthcare-etl-capstone
+git clone https://github.com/sathwikarr/healthcare-etl-capstone2.git
+cd healthcare-etl-capstone2
+```
 
-# 2. Create and activate a virtual environment
+### 2. Create and activate a virtual environment
+```bash
 python -m venv .venv
-source .venv/bin/activate   # or .venv\Scripts\activate on Windows
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+```
 
-# 3. Install dependencies
+### 3. Install dependencies
+```bash
 pip install -r requirements.txt
+```
 
-# 4. Set up Postgres credentials
-# Create a .env file at the project root (never committed — see .gitignore):
-#   DB_HOST=localhost
-#   DB_PORT=5432
-#   DB_NAME=healthcare_etl
-#   DB_USER=postgres
-#   DB_PASSWORD=<your password>
+### 4. Make sure PostgreSQL is running
+```bash
+# macOS (Homebrew)
+brew install postgresql@16
+brew services start postgresql@16
+```
+On Windows/Linux, install via the official installer or your package manager and
+ensure the service is running.
 
-# 5. Create the database and schema
-createdb healthcare_etl
-psql -U postgres -d healthcare_etl -f sql/ddl.sql
+### 5. Create the database and set a password
+```bash
+psql -U postgres -h localhost
+```
+```sql
+CREATE DATABASE healthcare_etl;
+ALTER USER postgres WITH PASSWORD 'yourpassword';
+\q
+```
 
-# 6. Generate source data
+### 6. Create your own `.env` file
+This file is **gitignored on purpose** (it holds a password) — every machine needs
+its own copy. Create `.env` at the project root:
+```
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=healthcare_etl
+DB_USER=postgres
+DB_PASSWORD=yourpassword
+```
+
+### 7. Run the schema DDL
+```bash
+psql -U postgres -d healthcare_etl -h localhost -f sql/ddl.sql
+```
+Creates `dim_patient`, `dim_doctor`, `dim_appointment`, `fact_treatment` (partitioned
+by month), and `etl_audit_log`.
+
+### 8. Generate source data
+```bash
 python src/generate_data.py
+```
+Writes `data/raw/patients.csv`, `appointments.csv`, `treatments.csv`.
 
-# 7. Run the full pipeline
+### 9. Run the full pipeline
+```bash
 python src/etl.py
+```
+Extracts, validates, transforms, loads into Postgres, and writes the audit log —
+logs one line per stage, ending in a metrics summary.
 
-# 8. Run tests
+### 10. Run the tests
+```bash
 pytest tests/test_etl.py -v
 ```
+Expected: `14 passed`.
+
+### 11. (Optional) Explore analytics and audit queries
+```bash
+psql -U postgres -d healthcare_etl -h localhost -f sql/analytics_queries.sql
+psql -U postgres -d healthcare_etl -h localhost -f sql/audit_checks.sql
+```
+Or open either file in any SQL client connected to `healthcare_etl` and run the
+queries one at a time to inspect individual result sets.
 
 ## What the pipeline does
 
@@ -109,16 +167,18 @@ pytest tests/test_etl.py -v
 quality issues (duplicate IDs, null values, invalid date/timestamp strings, and
 orphaned foreign keys) to simulate a realistic messy source system.
 
-**Validate** — runs a battery of checks (nulls, duplicates, orphans, invalid literals)
-and writes a timestamped Markdown report to `docs/data_quality_report.md` on every run.
+**Validate** — runs a battery of checks (nulls, duplicates, orphans, invalid literals,
+and schema/dtype drift) and writes a timestamped Markdown report to
+`docs/data_quality_report.md` on every run.
 
 **Transform** — cleans all three tables, drops orphaned rows (in dependency order,
 so newly-orphaned treatments created by dropping bad appointments are also caught),
 computes visit duration, per-patient cost aggregation, frequent-visitor flags,
 z-score-based cost outlier detection, per-doctor overlapping-appointment detection,
-and monthly visit summaries. `doctor_id` and `treatment_type` are cast to pandas
-`category` dtype for lower memory use and faster groupby operations. All logic is
-vectorized (no row-by-row Python loops).
+monthly visit summaries, and dataset-wide summary statistics (mean/median/stddev for
+cost and duration, computed with NumPy). `doctor_id` and `treatment_type` are cast to
+pandas `category` dtype for lower memory use and faster groupby operations. All logic
+is vectorized (no row-by-row Python loops).
 
 **Load** — upserts cleaned data into a PostgreSQL star schema using
 `INSERT ... ON CONFLICT DO UPDATE`, making re-runs idempotent. Loads in dependency
@@ -171,9 +231,10 @@ validation logic.
 
 ## Testing
 
-11 unit tests in `tests/test_etl.py` cover duration calculation, cost aggregation
+14 unit tests in `tests/test_etl.py` cover duration calculation, cost aggregation
 (including orphan exclusion), duplicate detection, orphan detection (including null
-handling), null detection, cost outlier flagging, and frequent-visitor flagging.
+handling), null detection, cost outlier flagging, frequent-visitor flagging, and
+summary statistics (including null exclusion and the all-null edge case).
 
 ```bash
 pytest tests/test_etl.py -v
