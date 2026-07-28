@@ -75,6 +75,21 @@ def drop_orphans(child_df: pd.DataFrame, child_fk: str,
 
 
 # --------------------------------------------------
+# Drop rows with nulls in required (non-FK) columns
+# --------------------------------------------------
+def drop_required_nulls(df: pd.DataFrame, required_columns: list) -> pd.DataFrame:
+    """
+    Remove any row that has a null in one of the given columns. Used for
+    columns where the source data has genuine missing values (patient
+    name/gender/dob, treatment cost/duration) and the project has chosen
+    to exclude incomplete rows entirely rather than keep or impute them.
+    This is a deliberate data-completeness policy, not a defect fix —
+    it trades row count for having zero nulls in the listed columns.
+    """
+    return df.dropna(subset=required_columns).reset_index(drop=True)
+
+
+# --------------------------------------------------
 # Cost aggregation per patient
 # --------------------------------------------------
 def aggregate_cost_per_patient(appointments: pd.DataFrame, treatments: pd.DataFrame) -> pd.DataFrame:
@@ -207,8 +222,13 @@ def transform_all(patients: pd.DataFrame, appointments: pd.DataFrame,
     Returns a dict of all resulting DataFrames.
     """
     clean_pat = clean_patients(patients)
+    clean_pat = drop_required_nulls(clean_pat, ["patient_name", "gender", "dob"])
+
     clean_appt = clean_appointments(appointments)
+    clean_appt = drop_required_nulls(clean_appt, ["duration_minutes"])
+
     clean_treat = clean_treatments(treatments)
+    clean_treat = drop_required_nulls(clean_treat, ["cost", "duration_minutes"])
 
     appt_no_orphans = drop_orphans(clean_appt, "patient_id", clean_pat, "patient_id")
     treat_no_orphans = drop_orphans(clean_treat, "appointment_id", appt_no_orphans, "appointment_id")

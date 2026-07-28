@@ -264,7 +264,7 @@ def generate_markdown_report(results: list, row_counts: dict) -> str:
 def save_report(report_text: str, filename: str = "data_quality_report.md"):
     os.makedirs(DOCS_DIR, exist_ok=True)
     path = os.path.join(DOCS_DIR, filename)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         f.write(report_text)
     return path
 
