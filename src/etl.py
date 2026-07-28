@@ -12,6 +12,7 @@ from validation import extract_all, run_all_validations, generate_markdown_repor
 from transform import transform_all
 from load import load_all, log_audit_run
 from database_connection import get_engine
+from compare import save_processed_data, generate_comparison_report, save_comparison_report
 
 logging.basicConfig(
     level=logging.INFO,
@@ -80,6 +81,13 @@ class HealthcareETL:
         stats = self.transformed_data["summary_stats"]
         for metric, values in stats.items():
             logger.info(f"  stats[{metric}]: mean={values['mean']}, median={values['median']}, stddev={values['stddev']}")
+
+        processed_paths = save_processed_data(self.transformed_data)
+        logger.info(f"  Processed CSVs written to data/processed/: {list(processed_paths.values())}")
+
+        comparison_md = generate_comparison_report(self.raw_data, self.transformed_data)
+        comparison_path = save_comparison_report(comparison_md)
+        logger.info(f"  Raw vs processed comparison report saved to {comparison_path}")
 
         return self.transformed_data
 

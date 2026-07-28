@@ -18,3 +18,4 @@ __pycache__/
 *.pyo
 .pytest_cache/
 .DS_Store
+data/processed/*.csv
